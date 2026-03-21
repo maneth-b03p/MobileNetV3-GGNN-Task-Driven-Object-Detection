@@ -34,6 +34,15 @@ src/
 ├── ggnn_mobilenetv3.py (modified)
 ```
 
+## Notes on Compatibility
+
+- The original implementation uses older PyTorch versions.
+- Some minor modifications were required for compatibility with newer versions:
+  - Removed deprecated `model_urls` import from torchvision
+  - Updated dataset paths to local environment
+
+These changes are included in the modified source files.
+
 ## Future Work
 - Detailed performance comparison with ResNet101
 - Inference time benchmarking
