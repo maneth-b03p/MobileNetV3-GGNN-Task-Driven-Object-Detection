@@ -12,6 +12,15 @@ https://github.com/yassersouri/task-driven-object-detection
 
 Most of the core implementation and structure are derived from the original work. Proper credit goes to the original authors for their contribution.
 
+## Pipeline
+The general architecture follows a task-driven object detection framework. Different configurations explored:
+
+- **Original pipeline:** RCNN/YOLO → ResNet101 → GGNN  
+- **This repository:** RCNN/YOLO → MobileNetV3 → GGNN  
+  - MobileNetV3 replaces ResNet101 for efficiency  
+  - Maintains the graph reasoning step (GGNN)  
+  - Reduces parameter count and computation for edge deployment
+ 
 ## My Contributions
 - Replaced ResNet101 backbone with MobileNetV3
 - Implemented modified graph network components:
@@ -39,6 +48,8 @@ src/
 - The original implementation uses older PyTorch versions.
 - Some minor modifications were required for compatibility with newer versions:
 
+## Usage
+(To be updated)
 
 ## Future Work
 - Detailed performance comparison with ResNet101
