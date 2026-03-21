@@ -1,7 +1,7 @@
 # Task-Driven Object Detection with MobileNetV3 Backbone
 
 ## Overview
-This repository presents a modified implementation of a task-driven object detection framework, where the original ResNet101 backbone is replaced with MobileNetV3.
+This repository presents a modified implementation of a task-driven object detection framework, where the original ResNet101 backbone is replaced with MobileNetV3. The model has to figure out the best object out of an image for a given task so an orthodox object detection model is not sufficient.
 
 The goal of this modification is to reduce computational complexity and parameter count, making the model more suitable for resource-constrained and edge computing environments.
 
