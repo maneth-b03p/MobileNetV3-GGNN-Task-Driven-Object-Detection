@@ -24,14 +24,15 @@ Most of the core implementation and structure are derived from the original work
 Deep object detection models often rely on heavy backbones such as ResNet101, which are computationally expensive. This work explores whether a lightweight alternative like MobileNetV3 can maintain performance while significantly improving efficiency.
 
 ## Project Structure
+```
 src/
-├── coco_tasks/
-│ ├── graph_datasets.py
+├── coco_tasks/ 
+│ ├── graph_datasets.py 
 │ ├── graph_experiments.py
 │ ├── mobilenet_graphnetwork.py (modified)
 │ └── ...
 ├── ggnn_mobilenetv3.py (modified)
-
+```
 
 ## Future Work
 - Detailed performance comparison with ResNet101
