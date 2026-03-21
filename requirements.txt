@@ -1,0 +1,10 @@
+Pillow
+numpy
+torch
+torchvision
+tqdm
+tensorboardX
+matplotlib
+click
+boltons
+cython
