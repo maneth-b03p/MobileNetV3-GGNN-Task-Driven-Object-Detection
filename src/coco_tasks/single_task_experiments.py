@@ -1,15 +1,10 @@
 import os
 from typing import List, Union, Tuple
-
 import torch
-import torch.optim as optim
-from tensorboardX import SummaryWriter
-from torch.optim import Optimizer, SGD
-from torch.utils.data import DataLoader
 from torch.utils.data.sampler import Sampler
-from tqdm import tqdm
 
-from coco_tasks.settings import TB_ROOT
+
+
 
 
 
