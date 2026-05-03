@@ -14,6 +14,7 @@ from coco_tasks.settings import (
     TASK_NUMBERS,
     COCO_TASKS_ANNOTATIONS_ROOT,
     COCO_TASKS_TEST_DETECTIONS,
+    COCO_TASKS_TEST_DETECTIONS_YOLO,
 )
 from coco_tasks.single_task_datasets import (
     load_image,
@@ -394,7 +395,7 @@ class CocoTasksTestGT(Dataset):
 class CocoTasksTest(Dataset):
     THRESH = 0.02
 
-    def __init__(self, task_number: int):
+    def __init__(self, task_number: int, detector_type: str = "faster_rcnn"):
         assert task_number in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 
         self.task_number = task_number
@@ -406,6 +407,13 @@ class CocoTasksTest(Dataset):
             self.task_coco = COCO(self.annotation_file)
 
         detections_file = COCO_TASKS_TEST_DETECTIONS
+
+        if detector_type == "yolo":
+            detections_file = COCO_TASKS_TEST_DETECTIONS_YOLO
+        else:
+            # Default to Faster R-CNN
+            detections_file = COCO_TASKS_TEST_DETECTIONS
+        
         with open(detections_file) as f:
             self.detections = json.load(f)
 
