@@ -62,8 +62,10 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
         aggregator = AllLinearAggregatorWeightedWithDetScore(
             in_features=h_dim, out_features=x_dim
         )
+        print("Weighted Aggregation is used for GGNN")
     else:
         aggregator = AllLinearAggregator(in_features=h_dim, out_features=x_dim)
+        print("Linear Aggregation is used for GGNN")
 
     output_model = OutputModelFirstLast(h_dim=h_dim, num_tasks=len(TASK_NUMBERS))
 
