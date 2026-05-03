@@ -15,7 +15,7 @@ from coco_tasks.graph_datasets import (
     CocoTasksTest,
     CocoTasksTestGT,
 )
-from coco_tasks.graph_networks import GGNN, GGNNBboxNoImg
+from coco_tasks.mobilenet_graph_networks import GGNN, GGNNBboxNoImg
 from coco_tasks.settings import TB_ROOT
 from coco_tasks.single_task_experiments import get_device, OverfitSampler
 
