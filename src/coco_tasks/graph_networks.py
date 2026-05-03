@@ -8,51 +8,6 @@ from torch.utils import model_zoo
 from torchvision.models.resnet import ResNet, Bottleneck
 
 
-class ResNetWithoutFC(ResNet):
-    def __init__(self, block, layers, num_classes=1000):
-        super().__init__(block, layers, num_classes)
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-
-        x = self.avgpool(x)
-        x = x.view(x.size(0), -1)
-
-        return x
-
-
-def myresnet101(pretrained=False, **kwargs):
-    """Constructs a ResNet-101 model.
-
-    Args:
-        pretrained (bool): If True, returns a model pre-trained on ImageNet
-    """
-    model = ResNetWithoutFC(Bottleneck, [3, 4, 23, 3], **kwargs)
-    if pretrained:
-        pass
-    return model
-
-
-class ExtractorResNet(nn.Module):
-    out_channels = 2048
-
-    def __init__(self):
-        super().__init__()
-        self.extractor = myresnet101(pretrained=True)
-
-    def forward(self, x: Tensor) -> Tensor:
-        return self.extractor.forward(x)
-
-    def __repr__(self) -> str:
-        return self.__class__.__name__
 
 
 class AllLinearAggregator(nn.Module):
