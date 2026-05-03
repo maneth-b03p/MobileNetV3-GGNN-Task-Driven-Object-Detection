@@ -36,7 +36,9 @@ from pycocotools.cocoeval import COCOeval
 @click.option("--overfit", type=bool, default=False)
 @click.option("--fusion", type=click.Choice(choices=["none", "avg"]), default="none")
 @click.option("--weighted-aggregation", type=bool, default=True)
-def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregation):
+@click.option("--detector", type=click.Choice(["faster_rcnn", "yolo"]), default="faster_rcnn")
+
+def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregation, detector):
     random.seed(random_seed)
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
@@ -116,7 +118,7 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
         if test_on_gt:
             test_db = CocoTasksTestGT(task_number)
         else:
-            test_db = CocoTasksTest(task_number)
+            test_db = CocoTasksTest(task_number, detector_type=detector)
 
         print("testing task {}".format(task_number), "---------------------")
 
