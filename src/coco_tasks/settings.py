@@ -8,6 +8,7 @@ COCO_TASKS_ROOT = os.path.join(COCO_ROOT, "coco-tasks")
 COCO_TASKS_ANNOTATIONS_ROOT = os.path.join(COCO_TASKS_ROOT, "annotations")
 COCO_TASKS_PAIR_ROOT = os.path.join(COCO_TASKS_ROOT, "pairs")
 COCO_TASKS_TEST_DETECTIONS = os.path.join(COCO_TASKS_ROOT, "detections_faster.json")
+COCO_TASKS_TEST_DETECTIONS_YOLO = os.path.join(COCO_TASKS_ROOT, "detections_yolo.json")
 
 TB_ROOT = os.path.join(COCO_TASKS_ROOT, "TB")
 SAVING_DIRECTORY = os.path.join(COCO_TASKS_ROOT, "saving_directory")
