@@ -42,8 +42,8 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
     torch.manual_seed(random_seed)
     torch.cuda.manual_seed_all(random_seed)
 
-    n_epochs = 2
-    lr = 1e-4
+    n_epochs = 3
+    lr = 1e-2
     wd = 0
     lr_scheduler = False
 
