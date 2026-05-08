@@ -104,6 +104,7 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
             )
             for param_group in optimizer.param_groups:
                 param_group["lr"] = 1e-3
+            lr_scheduler = False
             print("Resuming at lr=1e-3")
         else:
             print("No checkpoint found - training from scratch...")
