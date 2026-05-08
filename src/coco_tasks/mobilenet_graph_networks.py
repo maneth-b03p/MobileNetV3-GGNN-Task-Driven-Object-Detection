@@ -15,35 +15,72 @@ from torchvision.models import mobilenet_v3_large, MobileNet_V3_Large_Weights
 
 class ExtractorMobileNet(nn.Module):
 
+    out_channels = 128
 
-    out_channels = 1920
-
-    def __init__(self):
+    def __init__(self, out_dim: int = 128):
         super().__init__()
+
+        assert out_dim % 2 == 0, "out_dim must be even — split equally between avg and max streams"
+        stream_dim = out_dim // 2   # each stream projects to half the output dim
 
         # load MobileNetV3-Large with ImageNet pretrained weights
         backbone = mobilenet_v3_large(
             weights=MobileNet_V3_Large_Weights.IMAGENET1K_V2
         )
 
+        # conv feature layers — named 'extractor' so graph_experiments.py
+        # freeze call works: self.network.extractor.extractor.train(mode=False)
         self.extractor = backbone.features
 
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.maxpool = nn.AdaptiveMaxPool2d(1)
+        # pooling ops — both operate on same [B x 960 x 7 x 7] feature map
+        self.avgpool = nn.AdaptiveAvgPool2d(1)   # global avg → [B x 960 x 1 x 1]
+        self.maxpool = nn.AdaptiveMaxPool2d(1)   # global max → [B x 960 x 1 x 1]
 
- 
+        # separate learned projections — each stream independently compressed
+        # avg stream: captures distributed activation (texture, colour, mean shape)
+        self.avg_proj = nn.Sequential(
+            nn.Linear(960, stream_dim, bias=False),
+            nn.LayerNorm(stream_dim),
+            nn.ReLU(inplace=True),
+        )
+        # max stream: captures peak activation (edges, corners, dominant features)
+        self.max_proj = nn.Sequential(
+            nn.Linear(960, stream_dim, bias=False),
+            nn.LayerNorm(stream_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        # initialise both projections with xavier uniform for stable early training
+        nn.init.xavier_uniform_(self.avg_proj[0].weight)
+        nn.init.xavier_uniform_(self.max_proj[0].weight)
+
+        # freeze all conv layer parameters — only projection layers train
         for param in self.extractor.parameters():
             param.requires_grad = False
 
-    def forward(self, x: Tensor) -> Tensor:
+        self.out_channels = out_dim   # 128 by default
 
-        x = self.extractor(x)              # [B x 960 x 7 x 7]
-        avg = self.avgpool(x).flatten(1)   # [B x 960]
-        mx  = self.maxpool(x).flatten(1)   # [B x 960]
-        return torch.cat([avg, mx], dim=1) # [B x 1920]
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Args:
+            x: [B x 3 x 224 x 224]
+        Returns:
+            phi_o: [B x 128]
+                   first 64 dims = avg-pool projected features (texture/colour)
+                   last  64 dims = max-pool projected features (edges/peaks)
+        """
+        feat = self.extractor(x)             # [B x 960 x 7 x 7]
+
+        avg = self.avgpool(feat).flatten(1)  # [B x 960]
+        mx  = self.maxpool(feat).flatten(1)  # [B x 960]
+
+        avg_out = self.avg_proj(avg)         # [B x 64]
+        max_out = self.max_proj(mx)          # [B x 64]
+
+        return torch.cat([avg_out, max_out], dim=1)  # [B x 128]
 
     def __repr__(self) -> str:
-        return "ExtractorMobileNet(out_channels=960)"
+        return "ExtractorMobileNet(avg_stream=64, max_stream=64, out=128)"
 
 
 
@@ -163,7 +200,7 @@ class GATv2Aggregator(nn.Module):
 class InitializerMul(nn.Module):
 
 
-    def __init__(self, h_dim: int, phi_dim: int = 960, c_dim: int = 90):
+    def __init__(self, h_dim: int, phi_dim: int = 128, c_dim: int = 90):
         super().__init__()
         self.h_dim = h_dim
         self.phi_dim = phi_dim
@@ -271,8 +308,8 @@ class GGNN(nn.Module):
         self.class_dim = class_dim
         self.loss = nn.BCEWithLogitsLoss(reduction="mean")
 
-        # MobileNet replaces ResNet here
-        self.extractor = ExtractorMobileNet(phi_dim=h_dim)
+        # MobileNet replaces ResNet here — out_channels=128 (64 avg + 64 max)
+        self.extractor = ExtractorMobileNet()
         self.propagator = nn.GRUCell(input_size=self.x_dim, hidden_size=self.h_dim)
 
     def forward(self, o: Tensor, c: Tensor, d: Tensor) -> Tensor:
