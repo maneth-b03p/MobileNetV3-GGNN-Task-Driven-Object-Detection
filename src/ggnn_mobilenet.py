@@ -55,7 +55,7 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
     c_dim = 90
     max_steps = 3
 
-    phi_dim = 1920
+    phi_dim = 128
 
     train_db = JointCocoTasks()
     initializer = InitializerMul(h_dim=h_dim, phi_dim=phi_dim, c_dim=c_dim)
