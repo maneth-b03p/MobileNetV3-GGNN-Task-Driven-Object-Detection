@@ -441,10 +441,25 @@ class GGNNDiscLoss(nn.Module):
         self.propagator = nn.GRUCell(input_size=self.x_dim, hidden_size=self.h_dim)
         self.drop = nn.Dropout(0.25)
 
-
         self.aux_fc = nn.Linear(
             self.extractor.out_channels, self.output_model.num_tasks
         )
+        self.task_loss_weights = [
+            1.0,  # task 1
+            1.0,  # task 2
+            1.0,  # task 3
+            1.0,  # task 4
+            1.0,  # task 5
+            1.0,  # task 6
+            1.0,  # task 7
+            5.0,  # task 8  
+            1.0,  # task 9
+            1.0,  # task 10
+            1.0,  # task 11
+            1.0,  # task 12
+            1.0,  # task 13
+            1.0,  # task 14
+        ]
 
     def forward(self, o: Tensor, c: Tensor, d: Tensor) -> Tuple[Tensor, Tensor]:
 
@@ -495,7 +510,8 @@ class GGNNDiscLoss(nn.Module):
             if m[ti]:
                 final_logits = logits[0][:, ti]
                 aux_logits   = logits[1][:, ti]
-                loss += self._compute_single_loss(final_logits, aux_logits, t[:, ti])
+                task_loss = self._compute_single_loss(final_logits, aux_logits, t[:, ti])
+                loss += self.task_loss_weights[ti] * task_loss
         return loss
 
     def _compute_single_loss(
