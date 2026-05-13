@@ -450,7 +450,7 @@ class GGNNDiscLoss(nn.Module):
             1.0,  # task 3
             1.0,  # task 4
             1.0,  # task 5
-            1.0,  # task 6
+            2.0,  # task 6
             1.0,  # task 7
             5.0,  # task 8  
             1.0,  # task 9
