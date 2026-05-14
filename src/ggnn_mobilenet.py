@@ -57,7 +57,7 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
 
     phi_dim = 128
 
-    train_db = JointCocoTasks()
+    train_db = JointCocoTasks(oversample_tasks={8: 4})
     initializer = InitializerMul(h_dim=h_dim, phi_dim=phi_dim, c_dim=c_dim)
 
     if weighted_aggregation:
