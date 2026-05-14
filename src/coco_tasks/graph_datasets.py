@@ -56,7 +56,7 @@ def task_number_to_task_id(task_number: int) -> int:
 
 
 class JointCocoTasks(Dataset):
-    def __init__(self):
+    def __init__(self, oversample_tasks: dict = None):
         self.task_image_ids = {}
         self.task_cocos = {}
         self.all_image_ids = []
@@ -85,6 +85,34 @@ class JointCocoTasks(Dataset):
             for task_number in TASK_NUMBERS:
                 if image_id in self.task_image_ids[task_number]:
                     self.image_tasks[image_id].append(task_number)
+
+            if oversample_tasks:
+            task_image_ids_set = {
+                tn: set(ids) for tn, ids in self.task_image_ids.items()
+            }
+            for task_number, repeat_factor in oversample_tasks.items():
+                if task_number not in TASK_NUMBERS:
+                    raise ValueError(
+                        f"oversample_tasks: task {task_number} not in TASK_NUMBERS"
+                    )
+                coco_t = self.task_cocos[task_number]
+                # only images that have at least one PREFERRED annotation
+                preferred_image_ids = []
+                for image_id in task_image_ids_set[task_number]:
+                    pref_ann_ids = coco_t.getAnnIds(
+                        imgIds=image_id, catIds=[1]
+                    )
+                    if len(pref_ann_ids) > 0:
+                        preferred_image_ids.append(image_id)
+
+                # add repeat_factor extra copies
+                extra = preferred_image_ids * repeat_factor
+                self.all_image_ids.extend(extra)
+                print(
+                    f"JointCocoTasks: oversampled task {task_number} — "
+                    f"{len(preferred_image_ids)} images × {repeat_factor} extra "
+                    f"= {len(extra)} additional entries added"
+                )
 
     def __len__(self) -> int:
         return len(self.all_image_ids)
