@@ -87,9 +87,9 @@ class JointCocoTasks(Dataset):
                     self.image_tasks[image_id].append(task_number)
 
             if oversample_tasks:
-            task_image_ids_set = {
-                tn: set(ids) for tn, ids in self.task_image_ids.items()
-            }
+                task_image_ids_set = {
+                    tn: set(ids) for tn, ids in self.task_image_ids.items()
+                }
             for task_number, repeat_factor in oversample_tasks.items():
                 if task_number not in TASK_NUMBERS:
                     raise ValueError(
