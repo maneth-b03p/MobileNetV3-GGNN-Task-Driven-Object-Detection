@@ -108,11 +108,7 @@ class JointCocoTasks(Dataset):
                 # add repeat_factor extra copies
                 extra = preferred_image_ids * repeat_factor
                 self.all_image_ids.extend(extra)
-                print(
-                    f"JointCocoTasks: oversampled task {task_number} — "
-                    f"{len(preferred_image_ids)} images × {repeat_factor} extra "
-                    f"= {len(extra)} additional entries added"
-                )
+
 
     def __len__(self) -> int:
         return len(self.all_image_ids)
