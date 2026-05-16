@@ -8,3 +8,4 @@ matplotlib
 click
 boltons
 cython
+ultralytics
