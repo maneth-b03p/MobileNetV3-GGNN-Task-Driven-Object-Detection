@@ -25,6 +25,8 @@ from coco_tasks.single_task_datasets import (
 )
 from pycocotools.coco import COCO
 
+from coco_tasks.profiler import profiler_stats, log_mem
+
 MAX_GPU_SIZE = 64
 devnull = open(os.devnull, "w")
 
@@ -154,6 +156,10 @@ class JointCocoTasks(Dataset):
             image_transforms(crop_img_to_bbox(I, target_transforms(a["bbox"], I.size)))
             for a in selected_image_anns
         ]
+
+        profiler_stats["dataset_items"] += 1
+        for crop in x:
+            log_mem(crop)
 
         bbox = get_bbox_array_from_annotations(selected_image_anns, I.size)
 
@@ -492,6 +498,10 @@ class CocoTasksTest(Dataset):
             )
             for det in detections
         ]
+
+        profiler_stats["dataset_items"] += 1
+        for crop in x:
+            log_mem(crop)
 
         bbox = get_bbox_array_from_annotations(detections, I.size)
 
