@@ -36,7 +36,7 @@ def load_image(file_name: str) -> Image.Image:
         image = IMAGE_CACHE.get(file_name)
     else:
         image = Image.open(file_name)
-        profiler_stats["images_loaded"] = profiler_stats.get("images_loaded", 0) + 1
+        profiler_stats["images_loaded"] += 1
         image = image.convert("RGB")
         IMAGE_CACHE[file_name] = image
     return image
