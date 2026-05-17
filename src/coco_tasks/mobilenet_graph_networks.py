@@ -73,13 +73,17 @@ class ExtractorMobileNet(nn.Module):
         """
         feat = self.extractor(x)             # [B x 960 x 7 x 7]
 
-        # instrument each feature-map stage
-        for layer in self.extractor:
-            if hasattr(layer, 'weight'):        # Conv2d layers only
-                B, C, H, W = feat.shape
-                K = layer.weight.shape[-1]
-                log_conv(B, layer.in_channels, layer.out_channels, H, W, K)
-        log_mem(feat)                           # memory for the final feature map
+        # in __init__, after self.extractor = backbone.features:
+        def _make_hook(mod):
+            def hook(m, inp, out):
+                B, C_out, H, W = out.shape
+                K = m.kernel_size[0] if hasattr(m.kernel_size, '__getitem__') else m.kernel_size
+                log_conv(B, m.in_channels, C_out, H, W, K)
+            return hook
+
+        for m in self.extractor.modules():
+            if isinstance(m, torch.nn.Conv2d):
+                m.register_forward_hook(_make_hook(m))
 
         avg = self.avgpool(feat).flatten(1)  # [B x 960]
         mx  = self.maxpool(feat).flatten(1)  # [B x 960]
@@ -235,6 +239,8 @@ class InitializerMul(nn.Module):
         )
 
     def forward(self, phi_o: Tensor, c_hat: Tensor) -> Tensor:
+        log_linear(phi_o.shape[0], self.phi_dim, self.h_dim)   # phi_layer
+        log_linear(c_hat.shape[0], self.c_dim,   self.h_dim)
 
         return self.non_lin(self.phi_layer(phi_o)) * self.non_lin(self.c_layer(c_hat))
 
