@@ -28,6 +28,8 @@ from coco_tasks.settings import SAVING_DIRECTORY, TASK_NUMBERS
 from pycocotools.cocoeval import COCOeval
 from coco_tasks.single_task_datasets import get_image_file_name
 
+from coco_tasks.profiler import profiler_stats, log_conv
+
 try:
     from ultralytics import YOLO
 except ImportError:
@@ -44,6 +46,7 @@ YOLO_TO_COCO_MAPPING = [
 
 
 def run_yolo_inference_on_db(test_db, yolo_model):
+    profiler_stats["yolo_images"] = 0 
     print("Executing real-time object detection via YOLOv8 backbone model...")
     per_image_detections = {}
     
@@ -56,6 +59,15 @@ def run_yolo_inference_on_db(test_db, yolo_model):
         img_path = get_image_file_name(img_dict)
         
         results = yolo_model.predict(img_path, verbose=False, device='cpu')[0]
+
+        profiler_stats["yolo_images"] += 1
+        # log YOLO conv sizes from the model's layer list (logged once is enough)
+        if profiler_stats["yolo_images"] == 1:
+            for m in yolo_model.model.model:
+                if hasattr(m, 'conv') and hasattr(m.conv, 'weight'):
+                    w = m.conv.weight
+                    log_conv(1, w.shape[1], w.shape[0], -1, -1, w.shape[-1])
+                    # H/W = -1 means "not tracked" since YOLO runs variable-size internally
         
         img_detections = []
         boxes = results.boxes
