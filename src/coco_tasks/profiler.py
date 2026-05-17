@@ -35,5 +35,6 @@ def print_profiler_report():
     print(f"  Convolutions : {len(profiler_stats['conv_log'])}")
     print(f"  Linear calls : {profiler_stats['linear_count']}")
     print(f"  GGNN steps   : {profiler_stats['ggnn_steps']}")
+    print(f"  Images loaded : {profiler_stats['images_loaded']}")
     for i, (B,Ci,Co,H,W,K) in enumerate(profiler_stats["conv_log"]):
         print(f"    conv[{i:02d}] B={B} {Ci}→{Co} {H}×{W} K={K}")
