@@ -1,11 +1,12 @@
 profiler_stats = {
-    "flops":        0,      # total multiply-accumulate ops × 2
-    "mem_bytes":    0,      # tensor memory touched (bytes)
-    "mem_peak":     0,      # high-water mark
-    "conv_log":     [],     # list of (B, C_in, C_out, H, W, K) tuples
-    "linear_count": 0,      # number of linear layer calls
-    "ggnn_steps":   0,      # GRU iterations across all forward passes
-    "dataset_items":0,
+    "flops":         0,
+    "mem_bytes":     0,
+    "mem_peak":      0,
+    "conv_log":      [],
+    "linear_count":  0,
+    "ggnn_steps":    0,
+    "dataset_items": 0,
+    "images_loaded": 0,   
 }
 
 def reset_profiler():
