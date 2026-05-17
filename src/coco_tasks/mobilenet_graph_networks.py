@@ -11,6 +11,8 @@ import torch.nn.functional as F
 from torch import Tensor
 from torchvision.models import mobilenet_v3_large, MobileNet_V3_Large_Weights
 
+from coco_tasks.profiler import profiler_stats, log_conv, log_mem, log_linear
+
 
 
 class ExtractorMobileNet(nn.Module):
@@ -71,11 +73,23 @@ class ExtractorMobileNet(nn.Module):
         """
         feat = self.extractor(x)             # [B x 960 x 7 x 7]
 
+        # instrument each feature-map stage
+        for layer in self.extractor:
+            if hasattr(layer, 'weight'):        # Conv2d layers only
+                B, C, H, W = feat.shape
+                K = layer.weight.shape[-1]
+                log_conv(B, layer.in_channels, layer.out_channels, H, W, K)
+        log_mem(feat)                           # memory for the final feature map
+
         avg = self.avgpool(feat).flatten(1)  # [B x 960]
         mx  = self.maxpool(feat).flatten(1)  # [B x 960]
 
         avg_out = self.avg_proj(avg)         # [B x 64]
         max_out = self.max_proj(mx)          # [B x 64]
+
+        log_linear(avg.shape[0], 960, self.avg_proj[0].out_features)
+        log_linear(mx.shape[0],  960, self.max_proj[0].out_features)
+        log_mem(avg_out); log_mem(max_out)
 
         return torch.cat([avg_out, max_out], dim=1)  # [B x 128]
 
@@ -99,6 +113,9 @@ class AllLinearAggregator(nn.Module):
 
         B = h_t.size(0)
         transformed_h_t = self.layer(h_t)                          # [B x out_features]
+
+        log_linear(B, self.in_features, self.out_features)
+        log_mem(transformed_h_t)
         x_t_v = torch.sum(transformed_h_t, dim=0, keepdim=True)    # [1 x out_features]
         x_t = x_t_v.repeat(B, 1)                                   # [B x out_features]
         x_t -= transformed_h_t                                      # remove self
@@ -127,6 +144,10 @@ class AllLinearAggregatorWeightedWithDetScore(nn.Module):
 
         B = h_t.size(0)
         transformed_h_t = self.layer(h_t) * d                      # scale by det score
+
+        log_linear(B, self.in_features, self.out_features)
+        log_mem(transformed_h_t)
+
         x_t_v = torch.sum(transformed_h_t, dim=0, keepdim=True)    # [1 x out_features]
         x_t = x_t_v.repeat(B, 1)                                   # [B x out_features]
         x_t -= transformed_h_t                                      # remove self
@@ -280,8 +301,10 @@ class OutputModelFirstLast(nn.Module):
 
     def forward(self, h_0: Tensor, h_T: Tensor) -> Tensor:
         inp = torch.cat((h_0, h_T), dim=1)     # [B x h_dim*2]
+        log_linear(inp.shape[0], self.h_dim * 2, self.hidden_dim)
         inp = F.relu(self.fc1.forward(inp))     # [B x hidden_dim]
         inp = self.drop(inp)
+        log_linear(inp.shape[0], self.hidden_dim, self.num_tasks)   
         return self.fc2.forward(inp)            # [B x num_tasks]
 
     def __repr__(self) -> str:
@@ -470,6 +493,11 @@ class GGNNDiscLoss(nn.Module):
         for i in range(self.max_steps):
             x_t = self.aggregator.forward(h_t, phi_o, d)
             h_t = self.propagator.forward(x_t, h_t)
+
+            profiler_stats["ggnn_steps"] += 1
+            # GRU cell: 3 gates × 2 linear ops each = 6 × B × h_dim²
+            profiler_stats["flops"] += 6 * h_t.shape[0] * self.h_dim * self.h_dim
+            log_mem(h_t)
 
         h_T = h_t
 
