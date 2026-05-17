@@ -19,6 +19,8 @@ from coco_tasks.mobilenet_graph_networks import GGNN, GGNNBboxNoImg
 from coco_tasks.settings import TB_ROOT
 from coco_tasks.single_task_experiments import get_device, OverfitSampler
 
+from coco_tasks.profiler import reset_profiler, print_profiler_report, profiler_stats
+
 
 class JointGraphExperiment(object):
     def __init__(
@@ -54,6 +56,7 @@ class JointGraphExperiment(object):
         return string_format
 
     def train_n_epochs(self, n: int, overfit: bool = False, lr_scheduler: bool = False):
+        reset_profiler()
         if self.dataset is None:
             raise Exception("Training is not possible, Dataset is None.")
         self.network.train()
@@ -127,7 +130,10 @@ class JointGraphExperiment(object):
 
                 iter_num += 1
 
+        print_profiler_report()
+
     def do_test(self, test_db: Union[CocoTasksTest, CocoTasksTestGT], task_number: int):
+        reset_profiler()
         self.network.eval()
         self.network.to(self.device)
 
@@ -141,8 +147,14 @@ class JointGraphExperiment(object):
             for batch in tqdm(data_loader):
                 x, c, d, detections = batch
                 x, c, d = x.to(self.device), c.to(self.device), d.to(self.device)
-
+                ###
+                mem_before = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+                
                 probabilities = self.network.estimate_probability(x, c, d)
+
+                mem_after  = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+                profiler_stats["mem_bytes"] += (mem_after - mem_before)
+                ###
                 task_probabilities = probabilities[:, task_id].detach().cpu().numpy()
 
                 for i in range(len(detections)):
@@ -158,6 +170,7 @@ class JointGraphExperiment(object):
                         }
                     )
 
+        print_profiler_report()
         return results
 
 
