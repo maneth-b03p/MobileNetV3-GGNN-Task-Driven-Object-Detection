@@ -24,6 +24,8 @@ from coco_tasks.settings import (
 )
 from pycocotools.coco import COCO
 
+from coco_tasks.profiler import profiler_stats
+
 MAX_GPU_SIZE = 64
 IMAGE_CACHE = LRU(max_size=100)
 devnull = open(os.devnull, "w")
@@ -34,6 +36,7 @@ def load_image(file_name: str) -> Image.Image:
         image = IMAGE_CACHE.get(file_name)
     else:
         image = Image.open(file_name)
+        profiler_stats["images_loaded"] = profiler_stats.get("images_loaded", 0) + 1
         image = image.convert("RGB")
         IMAGE_CACHE[file_name] = image
     return image
