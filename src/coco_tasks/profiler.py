@@ -15,8 +15,8 @@ def reset_profiler():
 
 def log_conv(B, C_in, C_out, H_out, W_out, K):
     profiler_stats["conv_log"].append((B, C_in, C_out, H_out, W_out, K))
-    # standard FLOP formula: 2 × B × C_out × H_out × W_out × C_in × K × K
-    profiler_stats["flops"] += 2 * B * C_out * H_out * W_out * C_in * K * K
+    if H_out > 0 and W_out > 0:   # ← guard
+        profiler_stats["flops"] += 2 * B * C_out * H_out * W_out * C_in * K * K
 
 def log_linear(B, in_f, out_f):
     profiler_stats["flops"] += 2 * B * in_f * out_f
