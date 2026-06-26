@@ -34,6 +34,9 @@ except ImportError:
     raise ImportError("Please install ultralytics to use the YOLOv8 detector stage: pip install ultralytics")
 
 
+# --- YOLO confidence threshold (matches app.py defaults) ---
+DETECTION_THRESH = 0.02
+
 # ── COCO category mapping lookup (Maps YOLOv8 0-79 output indices to official 1-91 COCO IDs) ──
 YOLO_TO_COCO_MAPPING = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21,
