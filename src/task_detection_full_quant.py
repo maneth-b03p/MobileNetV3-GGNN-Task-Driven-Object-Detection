@@ -65,7 +65,9 @@ def run_yolo_inference_on_db(test_db, yolo_model):
     print(f"[DEBUG] ONNXRUNTIME_AVAILABLE={_HAS_ONNXRUNTIME}")
 
     if not _HAS_ONNXRUNTIME:
-        # Fallback: original FP32 ultralytics inference
+        # FALLBACK: original FP32 ultralytics inference
+        print("[DEBUG] ONNXRuntime path disabled -> using FP32 YOLOv8.predict()")
+
         per_image_detections = {}
         all_task_image_ids = test_db.task_coco.getImgIds()
         for img_id in tqdm(all_task_image_ids, desc="YOLOv8 Detection"):
