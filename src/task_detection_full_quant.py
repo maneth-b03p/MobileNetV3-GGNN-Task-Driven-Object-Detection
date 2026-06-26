@@ -104,8 +104,13 @@ def run_yolo_inference_on_db(test_db, yolo_model):
     onnx_dir = SAVING_DIRECTORY if isinstance(SAVING_DIRECTORY, str) and len(SAVING_DIRECTORY) else os.getcwd()
     os.makedirs(onnx_dir, exist_ok=True)
 
+    # EXPORT/QUANTIZATION MUST USE THE SAME FILE LOCATION.
+    # Ultralytics may export 'yolov8n.onnx' into the current working directory,
+    # while SAVING_DIRECTORY may point somewhere else.
+    # To avoid quantizing an empty/stale file, prefer the actual exported ONNX path.
     onnx_path = os.path.join(onnx_dir, "yolov8n.onnx")
     quant_path = os.path.join(onnx_dir, "yolov8n.quant.onnx")
+
 
     if not os.path.exists(onnx_path):
         # --- EXPORT LINE CHANGED (ONNX) ---
