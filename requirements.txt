@@ -10,3 +10,4 @@ boltons
 cython
 ultralytics
 pycocotools
+onnxruntime
