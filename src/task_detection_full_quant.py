@@ -201,13 +201,19 @@ def run_yolo_inference_on_db(test_db, yolo_model):
             y1 = (y1 - dh) / r
             y2 = (y2 - dh) / r
 
-            xmin = float(max(0, min(x1, img0.shape[1]-1)))
-            ymin = float(max(0, min(y1, img0.shape[0]-1)))
-            xmax = float(max(0, min(x2, img0.shape[1]-1)))
-            ymax = float(max(0, min(y2, img0.shape[0]-1)))
+            xmin = float(max(0, min(x1, img0.shape[1] - 1)))
+            ymin = float(max(0, min(y1, img0.shape[0] - 1)))
+            xmax = float(max(0, min(x2, img0.shape[1] - 1)))
+            ymax = float(max(0, min(y2, img0.shape[0] - 1)))
 
             width = xmax - xmin
             height = ymax - ymin
+
+            # --- BBOX SANITY FILTER (PREVENT ZERO-SIZE CROPS) ---
+            # Some ONNX output assumptions may yield invalid boxes.
+            if width <= 0 or height <= 0:
+                continue
+
 
             if cls < len(YOLO_TO_COCO_MAPPING):
                 coco_category_id = YOLO_TO_COCO_MAPPING[cls]
