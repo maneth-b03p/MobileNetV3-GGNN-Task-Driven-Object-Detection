@@ -59,8 +59,9 @@ def run_yolo_inference_on_db(test_db, yolo_model):
         from onnxruntime.quantization import QuantType, quantize_dynamic  # type: ignore
 
         _HAS_ONNXRUNTIME = True
-    except Exception:
+    except Exception as e:
         _HAS_ONNXRUNTIME = False
+        print(f"[DEBUG] ONNXRUNTIME_IMPORT_ERROR={type(e).__name__}: {e}")
 
     print(f"[DEBUG] ONNXRUNTIME_AVAILABLE={_HAS_ONNXRUNTIME}")
 
