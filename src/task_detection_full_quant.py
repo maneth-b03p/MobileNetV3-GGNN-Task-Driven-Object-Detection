@@ -118,9 +118,18 @@ def run_yolo_inference_on_db(test_db, yolo_model):
         # export to ONNX with CPU device.
         yolo_model.export(format="onnx", dynamic=False, imgsz=640, opset=12, device="cpu", half=False)
 
+    # QUANTIZATION MUST READ THE SAME VALID ONNX FILE.
+    # Ultralytics may export into a different directory depending on runtime CWD.
+    # If our expected onnx_path is missing/empty, fall back to the exported file in CWD.
+    if (not os.path.exists(onnx_path)) or os.path.getsize(onnx_path) == 0:
+        _fallback = "yolov8n.onnx"
+        if os.path.exists(_fallback) and os.path.getsize(_fallback) > 0:
+            onnx_path = _fallback
+
     if not os.path.exists(quant_path):
         # --- QUANTIZATION LINE CHANGED (DYNAMIC INT8) ---
         quantize_dynamic(onnx_path, quant_path, weight_type=QuantType.QInt8)
+
 
     # -------- ONNXRuntime session --------
     providers = ["CPUExecutionProvider"]
