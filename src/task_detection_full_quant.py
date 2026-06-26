@@ -57,7 +57,7 @@ def run_yolo_inference_on_db(test_db, yolo_model):
     try:
         import onnxruntime as ort  # type: ignore
         from onnxruntime.quantization import QuantType, quantize_dynamic  # type: ignore
-        from ultralytics.utils.exporter import export_formats  # type: ignore
+
         _HAS_ONNXRUNTIME = True
     except Exception:
         _HAS_ONNXRUNTIME = False
