@@ -45,6 +45,8 @@ YOLO_TO_COCO_MAPPING = [
 
 def run_yolo_inference_on_db(test_db, yolo_model):
     print("Executing real-time object detection via YOLOv8 (quantized ONNXRuntime)...")
+
+    _debug_one_image_done = False
     # --- QUANTIZATION SWITCH (MINIMAL-CHANGE):
     # We still use YOLOv8n weights, but export+run via ONNXRuntime.
     # The model file format is standard ONNX; quantization is done via
@@ -59,6 +61,8 @@ def run_yolo_inference_on_db(test_db, yolo_model):
         _HAS_ONNXRUNTIME = True
     except Exception:
         _HAS_ONNXRUNTIME = False
+
+    print(f"[DEBUG] ONNXRUNTIME_AVAILABLE={_HAS_ONNXRUNTIME}")
 
     if not _HAS_ONNXRUNTIME:
         # Fallback: original FP32 ultralytics inference
