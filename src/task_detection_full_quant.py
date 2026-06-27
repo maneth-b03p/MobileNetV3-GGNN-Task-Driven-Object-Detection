@@ -160,7 +160,7 @@ def run_yolo_inference_on_db(test_db, yolo_model):
         im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
         return im, r, (dw, dh)
 
-    def _infer_one(img_path: str):
+    def _infer_one(img_path: str, img_id: int):
         img = cv2.imread(img_path)
         if img is None:
             return []
@@ -233,6 +233,7 @@ def run_yolo_inference_on_db(test_db, yolo_model):
                 "bbox": [xmin, ymin, float(width), float(height)],
                 "score": score,
                 "category_id": int(coco_category_id),
+                "image_id": int(img_id),
             })
         return detections
 
@@ -241,7 +242,7 @@ def run_yolo_inference_on_db(test_db, yolo_model):
     for img_id in tqdm(all_task_image_ids, desc="YOLOv8 Detection"):
         img_dict = test_db.task_coco.loadImgs(img_id)[0]
         img_path = get_image_file_name(img_dict)
-        img_detections = _infer_one(img_path)
+        img_detections = _infer_one(img_path, int(img_id))
         per_image_detections[img_id] = img_detections
 
     return per_image_detections
