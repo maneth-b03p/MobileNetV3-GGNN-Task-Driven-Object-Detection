@@ -49,21 +49,15 @@ YOLO_TO_COCO_MAPPING = [
 
 
 def run_yolo_inference_on_db(test_db, yolo_model):
-    # CRITICAL FIX: HEADER MESSAGE NO LONGER CLAIMS QUANTIZATION.
-    # WE USE A NMS-EMBEDDED FP32 ONNX MODEL VIA ONNXRUNTIME.
-    # (Dynamic INT8 quantization is intentionally skipped: it corrupts the
-    # post-NMS graph in modern onnxruntime and is not the cause of mAP=0.)
-    print("Executing real-time object detection via YOLOv8 (ONNXRuntime)...")
+    # CODEX_QUANTIZED_YOLO: raw YOLOv8 ONNX + dynamic INT8 weights + Python NMS.
+    print("Executing real-time object detection via quantized YOLOv8 (ONNXRuntime)...")
 
     _debug_one_image_done = False
-    import tempfile
     import numpy as _np
 
     try:
         import onnxruntime as ort  # type: ignore
-        # CRITICAL FIX: QuantType and quantize_dynamic are no longer used.
-        # Removed their import to avoid an unused-import drift and confusion
-        # with the (now-skipped) quantization step.
+        from onnxruntime.quantization import QuantType, quantize_dynamic  # type: ignore
         _HAS_ONNXRUNTIME = True
     except Exception as e:
         _HAS_ONNXRUNTIME = False
@@ -104,38 +98,32 @@ def run_yolo_inference_on_db(test_db, yolo_model):
             per_image_detections[img_id] = img_detections
         return per_image_detections
 
-    # CRITICAL FIX: EXPORT YOLOV8N TO ONNX ONCE PER PROCESS (NMS-EMBEDDED).
-    # We re-use the file if it already exists to avoid re-exporting per image.
+    # Export YOLOv8 without embedded NMS. Quantizing a model that contains
+    # NonMaxSuppression can break ONNXRuntime execution, so NMS is done below.
     onnx_dir = SAVING_DIRECTORY if isinstance(SAVING_DIRECTORY, str) and len(SAVING_DIRECTORY) else os.getcwd()
     os.makedirs(onnx_dir, exist_ok=True)
-    onnx_path = os.path.join(onnx_dir, "yolov8n.onnx")
+    onnx_path = os.path.join(onnx_dir, "yolov8n_raw.onnx")
+    quantized_onnx_path = os.path.join(onnx_dir, "yolov8n_raw_int8.onnx")
 
-    # CRITICAL FIX: EXPORT ONLY WHEN THE FILE IS MISSING OR EMPTY.
-    # We do NOT re-export on every call to run_yolo_inference_on_db.
     if not (os.path.exists(onnx_path) and os.path.getsize(onnx_path) > 0):
-        # CRITICAL FIX: nms=True so the ONNX output is post-NMS, shape
-        # (1, max_dets, 6) = [x1, y1, x2, y2, score, class_id] in letterbox
-        # space. This is the format _infer_one expects.
         _exported = yolo_model.export(
             format="onnx", dynamic=False, imgsz=640, opset=12,
-            device="cpu", half=False, nms=True,
+            device="cpu", half=False, nms=False,
         )
-        # CRITICAL FIX: USE THE PATH RETURNED BY ultralytics (it may differ
-        # from onnx_path if CWD != onnx_dir).
         if isinstance(_exported, str) and os.path.exists(_exported) and os.path.getsize(_exported) > 0:
-            onnx_path = _exported
+            if os.path.abspath(_exported) != os.path.abspath(onnx_path):
+                import shutil
+                shutil.copyfile(_exported, onnx_path)
 
-    # CRITICAL FIX: FALLBACK TO A yolov8n.onnx IN CWD IF onnx_path IS WRONG.
-    if (not os.path.exists(onnx_path)) or os.path.getsize(onnx_path) == 0:
-        _fallback = "yolov8n.onnx"
-        if os.path.exists(_fallback) and os.path.getsize(_fallback) > 0:
-            onnx_path = _fallback
+    if not (os.path.exists(quantized_onnx_path) and os.path.getsize(quantized_onnx_path) > 0):
+        print(f"[DEBUG] Quantizing YOLOv8 ONNX -> {quantized_onnx_path}")
+        quantize_dynamic(
+            onnx_path,
+            quantized_onnx_path,
+            weight_type=QuantType.QInt8,
+        )
 
-    # CRITICAL FIX: USE THE EXPORTED ONNX MODEL DIRECTLY. NO quantize_dynamic.
-    # Dynamic INT8 quantization corrupts the post-NMS graph in modern
-    # onnxruntime, so we intentionally do not call it. The model is FP32
-    # ONNX with embedded NMS, which is what the rest of this file expects.
-    runtime_model_path = onnx_path
+    runtime_model_path = quantized_onnx_path
 
     # -------- ONNXRuntime session --------
     providers = ["CPUExecutionProvider"]
@@ -143,10 +131,6 @@ def run_yolo_inference_on_db(test_db, yolo_model):
     input_name = sess.get_inputs()[0].name
 
     # -------- Pre/post-processing helpers --------
-    # CRITICAL FIX: STRAIGHT-FORWARD LETTERBOX + 0..1 FLOAT32.
-    # ultralytics' nms=True ONNX export embeds BGR->RGB and 0-1 normalization
-    # in the graph, so we feed it a (1, 3, 640, 640) BGR float32 tensor
-    # that is already in [0, 1]. We do NOT do a manual BGR->RGB swap here.
     import cv2
 
     def _letterbox(im, new_shape=(640, 640), color=(114, 114, 114)):
@@ -163,88 +147,105 @@ def run_yolo_inference_on_db(test_db, yolo_model):
         im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
         return im, r, (dw, dh)
 
+    def _nms_xyxy(boxes, scores, iou_thresh=0.7):
+        if len(boxes) == 0:
+            return []
+        boxes = boxes.astype(_np.float32)
+        scores = scores.astype(_np.float32)
+        x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+        areas = _np.maximum(0.0, x2 - x1) * _np.maximum(0.0, y2 - y1)
+        order = scores.argsort()[::-1]
+        keep = []
+        while order.size > 0:
+            i = int(order[0])
+            keep.append(i)
+            if order.size == 1:
+                break
+            xx1 = _np.maximum(x1[i], x1[order[1:]])
+            yy1 = _np.maximum(y1[i], y1[order[1:]])
+            xx2 = _np.minimum(x2[i], x2[order[1:]])
+            yy2 = _np.minimum(y2[i], y2[order[1:]])
+            inter = _np.maximum(0.0, xx2 - xx1) * _np.maximum(0.0, yy2 - yy1)
+            union = areas[i] + areas[order[1:]] - inter + 1e-7
+            inds = _np.where((inter / union) <= iou_thresh)[0]
+            order = order[inds + 1]
+        return keep
+
     def _infer_one(img_path: str, img_id: int):
-        # CRITICAL FIX: INPUT PIPELINE FOR THE NMS-EMBEDDED ONNX MODEL.
-        # (1) Read the image as BGR uint8 (OpenCV default).
-        # (2) Letterbox to 640x640 (BGR uint8).
-        # (3) Cast to float32 and scale to [0, 1].
-        # (4) HWC -> CHW -> NCHW.
-        # The exported ONNX graph does the BGR->RGB swap and final normalize,
-        # so we DO NOT call cv2.cvtColor(..., BGR2RGB) here.
         img = cv2.imread(img_path)
         if img is None:
             return []
         img0 = img
         img, r, (dw, dh) = _letterbox(img, new_shape=(640, 640))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img = img.astype(_np.float32) / 255.0
         img = _np.transpose(img, (2, 0, 1))
         img = _np.expand_dims(img, 0)
 
         out = sess.run(None, {input_name: img})
-        # CRITICAL FIX: HANDLE THE 3D (1, max_dets, 6) POST-NMS OUTPUT.
-        # ultralytics pads unused detection rows with all zeros; we drop them
-        # by filtering on the score column (index 4) before any further
-        # processing. This avoids feeding `(0,0,0,0,0,0)` rows into the loop.
-        det = _np.asarray(out[0])
-        if det is None or det.size == 0:
+        pred = _np.asarray(out[0])
+        if pred is None or pred.size == 0:
             return []
-        if det.ndim == 3:
-            det = det[0]
-        if det.ndim == 1:
-            det = _np.expand_dims(det, 0)
-        if det.shape[1] >= 6:
-            non_pad = det[:, 4] > 0
-            if non_pad.any():
-                det = det[non_pad]
-            else:
-                return []
+
+        if pred.ndim == 3:
+            pred = pred[0]
+        if pred.shape[0] < pred.shape[1] and pred.shape[0] in (84, 85):
+            pred = pred.T
+        if pred.ndim != 2 or pred.shape[1] < 84:
+            return []
+
+        boxes_xywh = pred[:, :4]
+        class_scores = pred[:, 4:84]
+        yolo_classes = class_scores.argmax(axis=1)
+        scores = class_scores[_np.arange(class_scores.shape[0]), yolo_classes]
+        keep = scores >= DETECTION_THRESH
+        if not keep.any():
+            return []
+
+        boxes_xywh = boxes_xywh[keep]
+        scores = scores[keep]
+        yolo_classes = yolo_classes[keep]
+
+        x, y, w, h = boxes_xywh[:, 0], boxes_xywh[:, 1], boxes_xywh[:, 2], boxes_xywh[:, 3]
+        boxes_xyxy = _np.stack((x - w / 2, y - h / 2, x + w / 2, y + h / 2), axis=1)
 
         detections = []
-        # CRITICAL FIX: ROW LAYOUT IS [x1, y1, x2, y2, score, class_id] IN
-        # LETTERBOX SPACE. class_id IS THE COCO CATEGORY ID (1..90), NOT A
-        # YOLO INDEX, SO WE DO NOT LOOK IT UP IN YOLO_TO_COCO_MAPPING.
-        for row in det:
-            if row.shape[0] < 6:
-                continue
-            x1, y1, x2, y2, score, cls = row[:6]
-            score = float(score)
-            if score < DETECTION_THRESH:
-                continue
-            cls = int(cls)
+        for cls in _np.unique(yolo_classes):
+            cls_mask = yolo_classes == cls
+            cls_boxes = boxes_xyxy[cls_mask]
+            cls_scores = scores[cls_mask]
+            for local_i in _nms_xyxy(cls_boxes, cls_scores):
+                x1, y1, x2, y2 = cls_boxes[local_i]
+                score = float(cls_scores[local_i])
 
-            # CRITICAL FIX: MAP BOXES FROM LETTERBOX SPACE BACK TO ORIGINAL
-            # IMAGE SPACE. dw, dh are HALF padding on each side; r is the
-            # resize ratio used by _letterbox.
-            x1 = (x1 - dw) / r
-            x2 = (x2 - dw) / r
-            y1 = (y1 - dh) / r
-            y2 = (y2 - dh) / r
+                x1 = (x1 - dw) / r
+                x2 = (x2 - dw) / r
+                y1 = (y1 - dh) / r
+                y2 = (y2 - dh) / r
 
-            xmin = float(max(0.0, min(x1, img0.shape[1] - 1)))
-            ymin = float(max(0.0, min(y1, img0.shape[0] - 1)))
-            xmax = float(max(0.0, min(x2, img0.shape[1] - 1)))
-            ymax = float(max(0.0, min(y2, img0.shape[0] - 1)))
+                xmin = float(max(0.0, min(x1, img0.shape[1] - 1)))
+                ymin = float(max(0.0, min(y1, img0.shape[0] - 1)))
+                xmax = float(max(0.0, min(x2, img0.shape[1] - 1)))
+                ymax = float(max(0.0, min(y2, img0.shape[0] - 1)))
 
-            width = xmax - xmin
-            height = ymax - ymin
+                width = xmax - xmin
+                height = ymax - ymin
+                if width <= 0 or height <= 0:
+                    continue
 
-            # CRITICAL FIX: DROP ZERO-SIZE BOXES (CAN OCCUR AT IMAGE EDGES).
-            if width <= 0 or height <= 0:
-                continue
+                yolo_cls = int(cls)
+                if yolo_cls < len(YOLO_TO_COCO_MAPPING):
+                    coco_category_id = YOLO_TO_COCO_MAPPING[yolo_cls]
+                else:
+                    coco_category_id = yolo_cls + 1
 
-            # CRITICAL FIX: cls IS THE COCO CATEGORY ID (1..90). KEEP IT
-            # DIRECTLY; DO NOT REMAP VIA YOLO_TO_COCO_MAPPING. graph_datasets
-            # assumes category_id-1 is in [0..89], so we filter to [1..90].
-            if cls < 1 or cls > 90:
-                continue
-            coco_category_id = cls
-
-            detections.append({
-                "bbox": [xmin, ymin, float(width), float(height)],
-                "score": score,
-                "category_id": int(coco_category_id),
-                "image_id": int(img_id),
-            })
+                detections.append({
+                    "bbox": [xmin, ymin, float(width), float(height)],
+                    "score": score,
+                    "category_id": int(coco_category_id),
+                    "image_id": int(img_id),
+                })
+        detections = sorted(detections, key=lambda d: d["score"], reverse=True)[:300]
         return detections
 
     per_image_detections = {}
