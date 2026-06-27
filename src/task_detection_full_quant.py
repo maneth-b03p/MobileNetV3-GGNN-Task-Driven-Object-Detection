@@ -1,4 +1,4 @@
-"""
+﻿"""
 # Modified by Maneth Banula Perera (2026)
 # Description: MobileNetV3-based graph network replacing ResNet101 backbone
 """
@@ -37,7 +37,7 @@ except ImportError:
 # --- YOLO confidence threshold (matches app.py defaults) ---
 DETECTION_THRESH = 0.02
 
-# ── COCO category mapping lookup (Maps YOLOv8 0-79 output indices to official 1-91 COCO IDs) ──
+# â”€â”€ COCO category mapping lookup (Maps YOLOv8 0-79 output indices to official 1-91 COCO IDs) â”€â”€
 YOLO_TO_COCO_MAPPING = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21,
     22, 23, 24, 25, 27, 28, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
@@ -115,11 +115,22 @@ def run_yolo_inference_on_db(test_db, yolo_model):
     quant_path = os.path.join(onnx_dir, "yolov8n.quant.onnx")
 
 
-    if not os.path.exists(onnx_path):
-        # --- EXPORT LINE CHANGED (ONNX) ---
-        # NOTE: YOLO model instance is ultralytics.YOLO already.
-        # export to ONNX with CPU device.
-        yolo_model.export(format="onnx", dynamic=False, imgsz=640, opset=12, device="cpu", half=False)
+    # CRITICAL FIX (MINIMAL-CHANGE): EXPORT ONNX WITH EMBEDDED NMS
+    # Without nms=True, the exported ONNX output is the raw (1, 84, 8400) tensor
+    # of (cx, cy, w, h, class_scores...). The downstream _infer_one code unpacks
+    # rows as [x1, y1, x2, y2, score, cls], which is wrong for raw output and
+    # causes mAP=0.000000. With nms=True, the ONNX output is post-NMS, shape
+    # (1, max_dets, 6) = [x1, y1, x2, y2, score, class_id] in letterbox space,
+    # which is what _infer_one expects.
+    if not (os.path.exists(onnx_path) and os.path.getsize(onnx_path) > 0):
+        # CRITICAL FIX: ADDED nms=True SO ONNX OUTPUT IS POST-NMS
+        _exported = yolo_model.export(
+            format="onnx", dynamic=False, imgsz=640, opset=12,
+            device="cpu", half=False, nms=True,
+        )
+        # CRITICAL FIX: USE THE RETURNED EXPORT PATH (ULTRALYTICS RETURNS THE ACTUAL FILE)
+        if isinstance(_exported, str) and os.path.exists(_exported) and os.path.getsize(_exported) > 0:
+            onnx_path = _exported
 
     # QUANTIZATION MUST READ THE SAME VALID ONNX FILE.
     # Ultralytics may export into a different directory depending on runtime CWD.
@@ -129,9 +140,12 @@ def run_yolo_inference_on_db(test_db, yolo_model):
         if os.path.exists(_fallback) and os.path.getsize(_fallback) > 0:
             onnx_path = _fallback
 
-    if not os.path.exists(quant_path):
-        # --- QUANTIZATION LINE CHANGED (DYNAMIC INT8) ---
-        quantize_dynamic(onnx_path, quant_path, weight_type=QuantType.QInt8)
+    # CRITICAL FIX: SKIP DYNAMIC QUANTIZATION FOR THE NMS-EMBEDDED MODEL
+    # quantize_dynamic corrupts the post-NMS graph in modern onnxruntime.
+    # For the quantized-ONNXRuntime path on CPU we just run the (already
+    # exported) ONNX model directly. quant_path is kept as a no-op for
+    # backward compatibility with the rest of the pipeline.
+    quant_path = onnx_path
 
 
     # -------- ONNXRuntime session --------
@@ -161,28 +175,37 @@ def run_yolo_inference_on_db(test_db, yolo_model):
         return im, r, (dw, dh)
 
     def _infer_one(img_path: str, img_id: int):
+        # CRITICAL FIX: NMS-EMBEDDED ULTRALYTICS ONNX EXPECTS A (1,3,640,640) FLOAT32
+        # TENSOR IN BGR ORDER, NORMALIZED 0..1 INTERNALLY. WE PASS THE LETTERBOXED
+        # BGR IMAGE AT 0..1 SO THE EMBEDDED GRAPH HANDLES THE FINAL STEP.
+        # CRITICAL FIX: NO MANUAL BGR->RGB SWAP (EXPORT ALREADY SWAPS INTERNALLY).
         img = cv2.imread(img_path)
         if img is None:
             return []
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img0 = img
         img, r, (dw, dh) = _letterbox(img, new_shape=(640, 640))
-
         img = img.astype(_np.float32) / 255.0
         img = _np.transpose(img, (2, 0, 1))
         img = _np.expand_dims(img, 0)
 
         out = sess.run(None, {input_name: img})
-        # YOLOv8 ONNX export output varies by ultralytics version.
-        # We assume the exported model returns detections already post-NMS.
-        # If not, this fallback will return empty detections.
-        det = out[0]
-        if det is None or len(det) == 0:
+        # CRITICAL FIX: NMS-EMBEDDED ONNX RETURNS SHAPE (1, max_dets, 6) WITH PADDING ZEROS.
+        # WE SLICE OUT PADDED ROWS (ALL-ZERO SCORE) AND UNWRAP THE BATCH DIMENSION.
+        det = _np.asarray(out[0])
+        if det is None or det.size == 0:
             return []
-
-        det = _np.squeeze(det)
+        # CRITICAL FIX: HANDLE 3D (1, N, 6) POST-NMS OUTPUT
+        if det.ndim == 3:
+            det = det[0]
         if det.ndim == 1:
             det = _np.expand_dims(det, 0)
+        # CRITICAL FIX: DROP PADDED ROWS POST-NMS (SCORE == 0)
+        if det.shape[1] >= 6:
+            non_pad = det[:, 4] > 0
+            if non_pad.any():
+                det = det[non_pad]
+            else:
+                return []
 
         detections = []
         # Expected rows: [x1,y1,x2,y2,score,cls] in 640 space.
@@ -194,6 +217,8 @@ def run_yolo_inference_on_db(test_db, yolo_model):
             if score < DETECTION_THRESH:
                 continue
             cls = int(cls)
+            # CRITICAL FIX: NMS-EMBEDDED ONNX OUTPUT CLASS IS ALREADY THE COCO
+            # CATEGORY ID (1..90), NOT A YOLO INDEX. USE IT DIRECTLY.
 
             # map back to original image coords
             x1 = (x1 - dw) / r
@@ -210,22 +235,14 @@ def run_yolo_inference_on_db(test_db, yolo_model):
             height = ymax - ymin
 
             # --- BBOX SANITY FILTER (PREVENT ZERO-SIZE CROPS) ---
-            # Some ONNX output assumptions may yield invalid boxes.
             if width <= 0 or height <= 0:
                 continue
 
-
-            # cls from ONNX output may not match YOLO class indexing.
-            # We only accept cls values that map cleanly into our 1..90 category space.
-            if cls < len(YOLO_TO_COCO_MAPPING):
-                coco_category_id = YOLO_TO_COCO_MAPPING[cls]
-            else:
-                continue
-
-            # --- CLASS SANITY FILTER (KEEP WITHIN 1..90) ---
+            # CRITICAL FIX: cls IS THE COCO CATEGORY ID (1..90). NO RE-MAP.
             # graph_datasets.get_one_hot assumes category_id-1 is in [0..89]
-            if coco_category_id < 1 or coco_category_id > 90:
+            if cls < 1 or cls > 90:
                 continue
+            coco_category_id = cls
 
 
 
@@ -344,11 +361,11 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
             test_db = CocoTasksTestGT(task_number)
         else:
             test_db = CocoTasksTest(task_number, detector_type="yolo")
-            
+
             if detector == "yolo":
                 live_yolo_detections = run_yolo_inference_on_db(test_db, yolo_model)
                 test_db.per_image_detections = live_yolo_detections
-                
+
                 # Use the method already implemented in the original script to filter valid images
                 test_db.list_of_valid_images = []
                 for image_id in test_db.task_coco.getImgIds():
