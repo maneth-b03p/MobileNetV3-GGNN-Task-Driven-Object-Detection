@@ -36,6 +36,8 @@ except ImportError:
 
 # --- YOLO confidence threshold (matches app.py defaults) ---
 DETECTION_THRESH = 0.02
+MAX_YOLO_DETECTIONS = 128
+PRE_NMS_TOPK = 1000
 
 # CRITICAL FIX: ASCII COMMENT REPLACES PREVIOUS UTF-8 BOX-DRAWING CHARACTERS
 # THAT WERE CORRUPTED TO "ââ" BY ENCODING/MERGE ARTIFACTS.
@@ -48,7 +50,7 @@ YOLO_TO_COCO_MAPPING = [
 ]
 
 
-def run_yolo_inference_on_db(test_db, yolo_model):
+def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
     # CODEX_QUANTIZED_YOLO: raw YOLOv8 ONNX + dynamic INT8 weights + Python NMS.
     print("Executing real-time object detection via quantized YOLOv8 (ONNXRuntime)...")
 
@@ -206,6 +208,12 @@ def run_yolo_inference_on_db(test_db, yolo_model):
         scores = scores[keep]
         yolo_classes = yolo_classes[keep]
 
+        if len(scores) > PRE_NMS_TOPK:
+            topk = scores.argsort()[::-1][:PRE_NMS_TOPK]
+            boxes_xywh = boxes_xywh[topk]
+            scores = scores[topk]
+            yolo_classes = yolo_classes[topk]
+
         x, y, w, h = boxes_xywh[:, 0], boxes_xywh[:, 1], boxes_xywh[:, 2], boxes_xywh[:, 3]
         boxes_xyxy = _np.stack((x - w / 2, y - h / 2, x + w / 2, y + h / 2), axis=1)
 
@@ -245,15 +253,22 @@ def run_yolo_inference_on_db(test_db, yolo_model):
                     "category_id": int(coco_category_id),
                     "image_id": int(img_id),
                 })
-        detections = sorted(detections, key=lambda d: d["score"], reverse=True)[:300]
+        detections = sorted(detections, key=lambda d: d["score"], reverse=True)[:MAX_YOLO_DETECTIONS]
         return detections
 
     per_image_detections = {}
     all_task_image_ids = test_db.task_coco.getImgIds()
+    if detection_cache is None:
+        detection_cache = {}
     for img_id in tqdm(all_task_image_ids, desc="YOLOv8 Detection"):
-        img_dict = test_db.task_coco.loadImgs(img_id)[0]
-        img_path = get_image_file_name(img_dict)
-        img_detections = _infer_one(img_path, int(img_id))
+        cache_key = int(img_id)
+        if cache_key in detection_cache:
+            img_detections = detection_cache[cache_key]
+        else:
+            img_dict = test_db.task_coco.loadImgs(img_id)[0]
+            img_path = get_image_file_name(img_dict)
+            img_detections = _infer_one(img_path, cache_key)
+            detection_cache[cache_key] = img_detections
         per_image_detections[img_id] = img_detections
 
     return per_image_detections
@@ -349,6 +364,7 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
     if not test_on_gt and detector == "yolo":
         print("Initializing nano-scale YOLOv8 network parameters...")
         yolo_model = YOLO("yolov8n.pt")
+        yolo_detection_cache = {}
 
     for task_number in TASK_NUMBERS:
         if test_on_gt:
@@ -357,7 +373,9 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
             test_db = CocoTasksTest(task_number, detector_type="yolo")
 
             if detector == "yolo":
-                live_yolo_detections = run_yolo_inference_on_db(test_db, yolo_model)
+                live_yolo_detections = run_yolo_inference_on_db(
+                    test_db, yolo_model, detection_cache=yolo_detection_cache
+                )
                 test_db.per_image_detections = live_yolo_detections
 
                 # Use the method already implemented in the original script to filter valid images
