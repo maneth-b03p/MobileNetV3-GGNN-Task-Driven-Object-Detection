@@ -38,6 +38,9 @@ except ImportError:
 DETECTION_THRESH = 0.02
 MAX_YOLO_DETECTIONS = 128
 PRE_NMS_TOPK = 1000
+YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "yolov8n.pt")
+YOLO_QUANT_MODE = os.environ.get("YOLO_QUANT_MODE", "static").lower()
+YOLO_CALIBRATION_IMAGES = int(os.environ.get("YOLO_CALIBRATION_IMAGES", "32"))
 
 # CRITICAL FIX: ASCII COMMENT REPLACES PREVIOUS UTF-8 BOX-DRAWING CHARACTERS
 # THAT WERE CORRUPTED TO "ââ" BY ENCODING/MERGE ARTIFACTS.
@@ -51,29 +54,44 @@ YOLO_TO_COCO_MAPPING = [
 
 
 def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
-    # CODEX_QUANTIZED_YOLO: raw YOLOv8 ONNX + dynamic INT8 weights + Python NMS.
+    # CODEX_QUANTIZED_YOLO: raw YOLOv8 ONNX + INT8 weights/activations + Python NMS.
     print("Executing real-time object detection via quantized YOLOv8 (ONNXRuntime)...")
 
-    _debug_one_image_done = False
     import numpy as _np
 
     try:
         import onnxruntime as ort  # type: ignore
-        from onnxruntime.quantization import QuantType, quantize_dynamic  # type: ignore
+        from onnxruntime.quantization import (  # type: ignore
+            CalibrationDataReader,
+            CalibrationMethod,
+            QuantFormat,
+            QuantType,
+            quantize_dynamic,
+            quantize_static,
+        )
         _HAS_ONNXRUNTIME = True
     except Exception as e:
         _HAS_ONNXRUNTIME = False
         print(f"[DEBUG] ONNXRUNTIME_IMPORT_ERROR={type(e).__name__}: {e}")
 
     print(f"[DEBUG] ONNXRUNTIME_AVAILABLE={_HAS_ONNXRUNTIME}")
+    if detection_cache is None:
+        detection_cache = getattr(yolo_model, "_task_detection_cache", None)
+        if detection_cache is None:
+            detection_cache = {}
+            setattr(yolo_model, "_task_detection_cache", detection_cache)
 
     if not _HAS_ONNXRUNTIME:
-        # FALLBACK: original FP32 ultralytics inference
-        print("[DEBUG] ONNXRuntime path disabled -> using FP32 YOLOv8.predict()")
+        print("[DEBUG] ONNXRuntime path disabled -> using FP32 YOLOv8.predict() with cache")
 
         per_image_detections = {}
         all_task_image_ids = test_db.task_coco.getImgIds()
         for img_id in tqdm(all_task_image_ids, desc="YOLOv8 Detection"):
+            cache_key = int(img_id)
+            if cache_key in detection_cache:
+                per_image_detections[img_id] = detection_cache[cache_key]
+                continue
+
             img_dict = test_db.task_coco.loadImgs(img_id)[0]
             img_path = get_image_file_name(img_dict)
             results = yolo_model.predict(img_path, verbose=False, device='cpu')[0]
@@ -97,40 +115,10 @@ def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
                     "bbox": coco_bbox,
                     "score": score
                 })
+            img_detections = sorted(img_detections, key=lambda d: d["score"], reverse=True)[:MAX_YOLO_DETECTIONS]
+            detection_cache[cache_key] = img_detections
             per_image_detections[img_id] = img_detections
         return per_image_detections
-
-    # Export YOLOv8 without embedded NMS. Quantizing a model that contains
-    # NonMaxSuppression can break ONNXRuntime execution, so NMS is done below.
-    onnx_dir = SAVING_DIRECTORY if isinstance(SAVING_DIRECTORY, str) and len(SAVING_DIRECTORY) else os.getcwd()
-    os.makedirs(onnx_dir, exist_ok=True)
-    onnx_path = os.path.join(onnx_dir, "yolov8n_raw.onnx")
-    quantized_onnx_path = os.path.join(onnx_dir, "yolov8n_raw_int8.onnx")
-
-    if not (os.path.exists(onnx_path) and os.path.getsize(onnx_path) > 0):
-        _exported = yolo_model.export(
-            format="onnx", dynamic=False, imgsz=640, opset=12,
-            device="cpu", half=False, nms=False,
-        )
-        if isinstance(_exported, str) and os.path.exists(_exported) and os.path.getsize(_exported) > 0:
-            if os.path.abspath(_exported) != os.path.abspath(onnx_path):
-                import shutil
-                shutil.copyfile(_exported, onnx_path)
-
-    if not (os.path.exists(quantized_onnx_path) and os.path.getsize(quantized_onnx_path) > 0):
-        print(f"[DEBUG] Quantizing YOLOv8 ONNX -> {quantized_onnx_path}")
-        quantize_dynamic(
-            onnx_path,
-            quantized_onnx_path,
-            weight_type=QuantType.QInt8,
-        )
-
-    runtime_model_path = quantized_onnx_path
-
-    # -------- ONNXRuntime session --------
-    providers = ["CPUExecutionProvider"]
-    sess = ort.InferenceSession(runtime_model_path, providers=providers)
-    input_name = sess.get_inputs()[0].name
 
     # -------- Pre/post-processing helpers --------
     import cv2
@@ -148,6 +136,102 @@ def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
         left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
         im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
         return im, r, (dw, dh)
+
+    def _prepare_input(img):
+        img, r, (dw, dh) = _letterbox(img, new_shape=(640, 640))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = img.astype(_np.float32) / 255.0
+        img = _np.transpose(img, (2, 0, 1))
+        img = _np.expand_dims(img, 0)
+        return img, r, (dw, dh)
+
+    def _get_model_label():
+        ckpt_path = getattr(yolo_model, "ckpt_path", None) or YOLO_MODEL_PATH
+        return os.path.splitext(os.path.basename(str(ckpt_path)))[0]
+
+    # Export YOLOv8 without embedded NMS. Quantizing a model that contains
+    # NonMaxSuppression can break ONNXRuntime execution, so NMS is done below.
+    onnx_dir = SAVING_DIRECTORY if isinstance(SAVING_DIRECTORY, str) and len(SAVING_DIRECTORY) else os.getcwd()
+    os.makedirs(onnx_dir, exist_ok=True)
+    model_label = _get_model_label()
+    onnx_path = os.path.join(onnx_dir, f"{model_label}_raw.onnx")
+    static_quantized_onnx_path = os.path.join(onnx_dir, f"{model_label}_raw_static_int8.onnx")
+    dynamic_quantized_onnx_path = os.path.join(onnx_dir, f"{model_label}_raw_dynamic_int8.onnx")
+
+    if not (os.path.exists(onnx_path) and os.path.getsize(onnx_path) > 0):
+        _exported = yolo_model.export(
+            format="onnx", dynamic=False, imgsz=640, opset=12,
+            device="cpu", half=False, nms=False,
+        )
+        if isinstance(_exported, str) and os.path.exists(_exported) and os.path.getsize(_exported) > 0:
+            if os.path.abspath(_exported) != os.path.abspath(onnx_path):
+                import shutil
+                shutil.copyfile(_exported, onnx_path)
+        if not (os.path.exists(onnx_path) and os.path.getsize(onnx_path) > 0):
+            raise RuntimeError(f"YOLO ONNX export failed: expected file was not created at {onnx_path}")
+
+    providers = ["CPUExecutionProvider"]
+    export_sess = ort.InferenceSession(onnx_path, providers=providers)
+    input_name = export_sess.get_inputs()[0].name
+    del export_sess
+
+    class YoloCalibrationReader(CalibrationDataReader):
+        def __init__(self, image_paths, input_name):
+            self.image_paths = list(image_paths)
+            self.input_name = input_name
+            self.index = 0
+
+        def get_next(self):
+            while self.index < len(self.image_paths):
+                img_path = self.image_paths[self.index]
+                self.index += 1
+                img = cv2.imread(img_path)
+                if img is None:
+                    continue
+                img, _, _ = _prepare_input(img)
+                return {self.input_name: img}
+            return None
+
+    all_task_image_ids = test_db.task_coco.getImgIds()
+    calibration_paths = []
+    for img_id in all_task_image_ids[:YOLO_CALIBRATION_IMAGES]:
+        img_dict = test_db.task_coco.loadImgs(img_id)[0]
+        calibration_paths.append(get_image_file_name(img_dict))
+
+    runtime_model_path = onnx_path
+    if YOLO_QUANT_MODE == "static":
+        if not (os.path.exists(static_quantized_onnx_path) and os.path.getsize(static_quantized_onnx_path) > 0):
+            print(f"[DEBUG] Static INT8 quantizing YOLOv8 ONNX -> {static_quantized_onnx_path}")
+            try:
+                quantize_static(
+                    onnx_path,
+                    static_quantized_onnx_path,
+                    YoloCalibrationReader(calibration_paths, input_name),
+                    quant_format=QuantFormat.QDQ,
+                    activation_type=QuantType.QUInt8,
+                    weight_type=QuantType.QInt8,
+                    calibrate_method=CalibrationMethod.MinMax,
+                )
+            except Exception as e:
+                print(f"[DEBUG] STATIC_QUANTIZATION_FAILED={type(e).__name__}: {e}")
+        if os.path.exists(static_quantized_onnx_path) and os.path.getsize(static_quantized_onnx_path) > 0:
+            runtime_model_path = static_quantized_onnx_path
+            print("[DEBUG] Using static INT8 YOLOv8 ONNX model")
+
+    if runtime_model_path == onnx_path:
+        if not (os.path.exists(dynamic_quantized_onnx_path) and os.path.getsize(dynamic_quantized_onnx_path) > 0):
+            print(f"[DEBUG] Dynamic weight-only quantizing YOLOv8 ONNX -> {dynamic_quantized_onnx_path}")
+            quantize_dynamic(
+                onnx_path,
+                dynamic_quantized_onnx_path,
+                weight_type=QuantType.QInt8,
+            )
+        runtime_model_path = dynamic_quantized_onnx_path
+        print("[DEBUG] Using dynamic weight-only INT8 YOLOv8 ONNX model")
+
+    # -------- ONNXRuntime session --------
+    sess = ort.InferenceSession(runtime_model_path, providers=providers)
+    input_name = sess.get_inputs()[0].name
 
     def _nms_xyxy(boxes, scores, iou_thresh=0.7):
         if len(boxes) == 0:
@@ -173,27 +257,30 @@ def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
             order = order[inds + 1]
         return keep
 
+    def _normalize_yolo_output(pred):
+        pred = _np.asarray(pred)
+        if pred is None or pred.size == 0:
+            return None
+        if pred.ndim == 3 and pred.shape[0] == 1:
+            pred = pred[0]
+        if pred.ndim != 2:
+            return None
+        if pred.shape[1] >= 84:
+            return pred
+        if pred.shape[0] >= 84:
+            return pred.T
+        return None
+
     def _infer_one(img_path: str, img_id: int):
         img = cv2.imread(img_path)
         if img is None:
             return []
         img0 = img
-        img, r, (dw, dh) = _letterbox(img, new_shape=(640, 640))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.astype(_np.float32) / 255.0
-        img = _np.transpose(img, (2, 0, 1))
-        img = _np.expand_dims(img, 0)
+        img, r, (dw, dh) = _prepare_input(img)
 
         out = sess.run(None, {input_name: img})
-        pred = _np.asarray(out[0])
-        if pred is None or pred.size == 0:
-            return []
-
-        if pred.ndim == 3:
-            pred = pred[0]
-        if pred.shape[0] < pred.shape[1] and pred.shape[0] in (84, 85):
-            pred = pred.T
-        if pred.ndim != 2 or pred.shape[1] < 84:
+        pred = _normalize_yolo_output(out[0])
+        if pred is None:
             return []
 
         boxes_xywh = pred[:, :4]
@@ -257,9 +344,6 @@ def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
         return detections
 
     per_image_detections = {}
-    all_task_image_ids = test_db.task_coco.getImgIds()
-    if detection_cache is None:
-        detection_cache = {}
     for img_id in tqdm(all_task_image_ids, desc="YOLOv8 Detection"):
         cache_key = int(img_id)
         if cache_key in detection_cache:
@@ -362,8 +446,8 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
         )
 
     if not test_on_gt and detector == "yolo":
-        print("Initializing nano-scale YOLOv8 network parameters...")
-        yolo_model = YOLO("yolov8n.pt")
+        print(f"Initializing YOLOv8 detector parameters from {YOLO_MODEL_PATH}...")
+        yolo_model = YOLO(YOLO_MODEL_PATH)
         yolo_detection_cache = {}
 
     for task_number in TASK_NUMBERS:
