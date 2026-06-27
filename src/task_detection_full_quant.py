@@ -39,7 +39,10 @@ DETECTION_THRESH = 0.02
 MAX_YOLO_DETECTIONS = 128
 PRE_NMS_TOPK = 1000
 YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "yolov8n.pt")
-YOLO_QUANT_MODE = os.environ.get("YOLO_QUANT_MODE", "static").lower()
+# "dynamic" preserves the working detector accuracy in this project. Static
+# activation INT8 is available with YOLO_QUANT_MODE=static, but can collapse
+# YOLOv8 confidence/class outputs without careful calibration.
+YOLO_QUANT_MODE = os.environ.get("YOLO_QUANT_MODE", "dynamic").lower()
 YOLO_CALIBRATION_IMAGES = int(os.environ.get("YOLO_CALIBRATION_IMAGES", "32"))
 
 # CRITICAL FIX: ASCII COMMENT REPLACES PREVIOUS UTF-8 BOX-DRAWING CHARACTERS
@@ -56,6 +59,7 @@ YOLO_TO_COCO_MAPPING = [
 def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
     # CODEX_QUANTIZED_YOLO: raw YOLOv8 ONNX + INT8 weights/activations + Python NMS.
     print("Executing real-time object detection via quantized YOLOv8 (ONNXRuntime)...")
+    print(f"[DEBUG] YOLO_QUANT_MODE={YOLO_QUANT_MODE}")
 
     import numpy as _np
 
@@ -198,8 +202,13 @@ def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
         img_dict = test_db.task_coco.loadImgs(img_id)[0]
         calibration_paths.append(get_image_file_name(img_dict))
 
+    quant_mode = YOLO_QUANT_MODE
+    if quant_mode not in {"dynamic", "static", "fp32"}:
+        print(f"[DEBUG] Unknown YOLO_QUANT_MODE={quant_mode!r}; using dynamic")
+        quant_mode = "dynamic"
+
     runtime_model_path = onnx_path
-    if YOLO_QUANT_MODE == "static":
+    if quant_mode == "static":
         if not (os.path.exists(static_quantized_onnx_path) and os.path.getsize(static_quantized_onnx_path) > 0):
             print(f"[DEBUG] Static INT8 quantizing YOLOv8 ONNX -> {static_quantized_onnx_path}")
             try:
@@ -218,7 +227,7 @@ def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
             runtime_model_path = static_quantized_onnx_path
             print("[DEBUG] Using static INT8 YOLOv8 ONNX model")
 
-    if runtime_model_path == onnx_path:
+    if runtime_model_path == onnx_path and quant_mode == "dynamic":
         if not (os.path.exists(dynamic_quantized_onnx_path) and os.path.getsize(dynamic_quantized_onnx_path) > 0):
             print(f"[DEBUG] Dynamic weight-only quantizing YOLOv8 ONNX -> {dynamic_quantized_onnx_path}")
             quantize_dynamic(
@@ -228,6 +237,8 @@ def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
             )
         runtime_model_path = dynamic_quantized_onnx_path
         print("[DEBUG] Using dynamic weight-only INT8 YOLOv8 ONNX model")
+    elif runtime_model_path == onnx_path:
+        print("[DEBUG] Using FP32 YOLOv8 ONNX model")
 
     # -------- ONNXRuntime session --------
     sess = ort.InferenceSession(runtime_model_path, providers=providers)
