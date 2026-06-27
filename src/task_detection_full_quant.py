@@ -215,10 +215,19 @@ def run_yolo_inference_on_db(test_db, yolo_model):
                 continue
 
 
+            # cls from ONNX output may not match YOLO class indexing.
+            # We only accept cls values that map cleanly into our 1..90 category space.
             if cls < len(YOLO_TO_COCO_MAPPING):
                 coco_category_id = YOLO_TO_COCO_MAPPING[cls]
             else:
-                coco_category_id = cls + 1
+                continue
+
+            # --- CLASS SANITY FILTER (KEEP WITHIN 1..90) ---
+            # graph_datasets.get_one_hot assumes category_id-1 is in [0..89]
+            if coco_category_id < 1 or coco_category_id > 90:
+                continue
+
+
 
             detections.append({
                 "bbox": [xmin, ymin, float(width), float(height)],
