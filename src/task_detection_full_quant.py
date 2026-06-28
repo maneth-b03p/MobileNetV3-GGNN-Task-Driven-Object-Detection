@@ -164,7 +164,7 @@ def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
 
     if not (os.path.exists(onnx_path) and os.path.getsize(onnx_path) > 0):
         _exported = yolo_model.export(
-            format="onnx", dynamic=False, imgsz=640, opset=12,
+            format="onnx", dynamic=False, imgsz=640, opset=15,
             device="cpu", half=False, nms=False,
         )
         if isinstance(_exported, str) and os.path.exists(_exported) and os.path.getsize(_exported) > 0:
@@ -174,7 +174,7 @@ def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
         if not (os.path.exists(onnx_path) and os.path.getsize(onnx_path) > 0):
             raise RuntimeError(f"YOLO ONNX export failed: expected file was not created at {onnx_path}")
 
-    providers = ["CPUExecutionProvider"]
+    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
     export_sess = ort.InferenceSession(onnx_path, providers=providers)
     input_name = export_sess.get_inputs()[0].name
     del export_sess
@@ -276,10 +276,10 @@ def run_yolo_inference_on_db(test_db, yolo_model, detection_cache=None):
             pred = pred[0]
         if pred.ndim != 2:
             return None
+        if pred.shape[0] < pred.shape[1]:
+            pred = pred.T
         if pred.shape[1] >= 84:
             return pred
-        if pred.shape[0] >= 84:
-            return pred.T
         return None
 
     def _infer_one(img_path: str, img_id: int):
