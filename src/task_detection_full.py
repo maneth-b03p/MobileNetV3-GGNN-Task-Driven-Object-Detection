@@ -57,10 +57,8 @@ def _load_picodet_session():
         print(f"Downloading PicoDet-L ONNX (~14MB)...")
         urllib.request.urlretrieve(_PICODET_ONNX_URL, _PICODET_ONNX_PATH)
         print(f"Saved to {_PICODET_ONNX_PATH}")
-    sess = ort.InferenceSession(
-        _PICODET_ONNX_PATH,
-        providers=["CPUExecutionProvider"]
-    )
+    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    sess = ort.InferenceSession(_PICODET_ONNX_PATH, providers=providers)
     return sess
 
 
