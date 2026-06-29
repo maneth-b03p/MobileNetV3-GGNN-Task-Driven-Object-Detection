@@ -29,62 +29,116 @@ from pycocotools.cocoeval import COCOeval
 from coco_tasks.single_task_datasets import get_image_file_name
 
 try:
-    from ultralytics import YOLO
+    import onnxruntime as ort
+    import urllib.request, os as _os
+    _PICODET_ONNX_URL = "https://paddledet.bj.bcebos.com/deploy/third_engine/picodet_l_640_coco_npu.onnx"
+    _PICODET_ONNX_PATH = os.path.join(os.path.expanduser("~"), ".picodet", "picodet_l_640_coco.onnx")
 except ImportError:
-    raise ImportError("Please install ultralytics to use the YOLOv8 detector stage: pip install ultralytics")
+    raise ImportError("Please install onnxruntime: pip install onnxruntime")
 
 
-# ── COCO category mapping lookup (Maps YOLOv8 0-79 output indices to official 1-91 COCO IDs) ──
-YOLO_TO_COCO_MAPPING = [
+# PicoDet trains on COCO 80 classes in the same order as YOLO.
+# 0-indexed class id -> official COCO 1-indexed category_id
+DETECTOR_TO_COCO_MAPPING = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21,
     22, 23, 24, 25, 27, 28, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
     46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65,
     67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90
 ]
 
+DETECTION_THRESH = 0.02
+MAX_DETECTIONS   = 128
 
-def run_yolo_inference_on_db(test_db, yolo_model):
-    print("Executing real-time object detection via YOLOv8 backbone model...")
+
+def _load_picodet_session():
+    """Download PicoDet-L ONNX once and create ONNXRuntime session."""
+    _os.makedirs(os.path.dirname(_PICODET_ONNX_PATH), exist_ok=True)
+    if not os.path.exists(_PICODET_ONNX_PATH):
+        print(f"Downloading PicoDet-L ONNX (~14MB)...")
+        urllib.request.urlretrieve(_PICODET_ONNX_URL, _PICODET_ONNX_PATH)
+        print(f"Saved to {_PICODET_ONNX_PATH}")
+    sess = ort.InferenceSession(
+        _PICODET_ONNX_PATH,
+        providers=["CPUExecutionProvider"]
+    )
+    return sess
+
+
+def _picodet_infer_one(sess, img_path, img_id, conf_thresh=DETECTION_THRESH):
+    """
+    Run PicoDet-L on one image.
+    Returns list of dicts: {image_id, category_id, bbox:[x,y,w,h], score}
+    """
+    import cv2
+    import numpy as np
+
+    img = cv2.imread(img_path)
+    if img is None:
+        return []
+
+    # PicoDet expects 640x640 RGB, normalised to [0,1]
+    img_h, img_w = img.shape[:2]
+    target = 640
+    scale  = target / max(img_h, img_w)
+    nw, nh = int(img_w * scale), int(img_h * scale)
+
+    resized = cv2.resize(img, (nw, nh))
+    padded  = np.full((target, target, 3), 114, dtype=np.uint8)
+    padded[:nh, :nw] = resized
+    padded  = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    inp     = np.transpose(padded, (2, 0, 1))[None]          # [1, 3, 640, 640]
+
+    # scale_factor tells PicoDet how to map back to original coords
+    scale_factor = np.array([[scale, scale]], dtype=np.float32)
+
+    outputs = sess.run(None, {
+        "image":        inp,
+        "scale_factor": scale_factor,
+    })
+
+    # PicoDet ONNX outputs: [N, 6] - each row: [class_id, score, x1, y1, x2, y2]
+    # (original image coordinates, already rescaled by scale_factor inside model)
+    raw = outputs[0]  # [N, 6]
+    if raw is None or len(raw) == 0:
+        return []
+
+    detections = []
+    for det in raw:
+        cls_id, score, x1, y1, x2, y2 = det
+        if float(score) < conf_thresh:
+            continue
+        cls_id = int(cls_id)
+        x1 = max(0.0, float(x1))
+        y1 = max(0.0, float(y1))
+        x2 = min(float(img_w), float(x2))
+        y2 = min(float(img_h), float(y2))
+        w  = x2 - x1
+        h  = y2 - y1
+        if w <= 0 or h <= 0:
+            continue
+        coco_cat = DETECTOR_TO_COCO_MAPPING[cls_id] \
+            if cls_id < len(DETECTOR_TO_COCO_MAPPING) else cls_id + 1
+        detections.append({
+            "image_id":    int(img_id),
+            "category_id": int(coco_cat),
+            "bbox":        [x1, y1, w, h],
+            "score":       float(score),
+        })
+
+    detections.sort(key=lambda d: d["score"], reverse=True)
+    return detections[:MAX_DETECTIONS]
+
+
+def run_detector_inference_on_db(test_db, picodet_sess):
+    """Replaces run_yolo_inference_on_db. Same output format."""
+    print("Running PicoDet-L detection (CPU)...")
     per_image_detections = {}
-    
-    # Run inference across all image IDs registered for this task
-    all_task_image_ids = test_db.task_coco.getImgIds()
-    
-    for img_id in tqdm(all_task_image_ids, desc="YOLOv8 Detection"):
-        img_dict = test_db.task_coco.loadImgs(img_id)[0]
-        
-        img_path = get_image_file_name(img_dict)
-        
-        results = yolo_model.predict(img_path, verbose=False, device='cpu')[0]
-        
-        img_detections = []
-        boxes = results.boxes
-        
-        for box in boxes:
-            xyxy = box.xyxy[0].tolist()
-            xmin, ymin, xmax, ymax = xyxy
-            
-            width = xmax - xmin
-            height = ymax - ymin
-            coco_bbox = [xmin, ymin, width, height]
-            
-            score = float(box.conf[0].item())
-            yolo_cls = int(box.cls[0].item())
-            
-            if yolo_cls < len(YOLO_TO_COCO_MAPPING):
-                coco_category_id = YOLO_TO_COCO_MAPPING[yolo_cls]
-            else:
-                coco_category_id = yolo_cls + 1
-                
-            img_detections.append({
-                "image_id": int(img_id),
-                "category_id": int(coco_category_id),
-                "bbox": coco_bbox,
-                "score": score
-            })
-            
-        per_image_detections[img_id] = img_detections
-        
+    for img_id in tqdm(test_db.task_coco.getImgIds(), desc="PicoDet Detection"):
+        img_dict  = test_db.task_coco.loadImgs(img_id)[0]
+        img_path  = get_image_file_name(img_dict)
+        per_image_detections[img_id] = _picodet_infer_one(
+            picodet_sess, img_path, img_id
+        )
     return per_image_detections
 
 
@@ -176,19 +230,21 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
         )
 
     if not test_on_gt and detector == "yolo":
-        print("Initializing nano-scale YOLOv8 network parameters...")
-        yolo_model = YOLO("yolov8n.pt")
+        print(f"Initializing PicoDet-L ONNX session for CPU inference...")
+        picodet_sess = _load_picodet_session()
 
     for task_number in TASK_NUMBERS:
         if test_on_gt:
             test_db = CocoTasksTestGT(task_number)
         else:
             test_db = CocoTasksTest(task_number, detector_type="yolo")
-            
+
             if detector == "yolo":
-                live_yolo_detections = run_yolo_inference_on_db(test_db, yolo_model)
-                test_db.per_image_detections = live_yolo_detections
-                
+                live_detections = run_detector_inference_on_db(
+                    test_db, picodet_sess
+                )
+                test_db.per_image_detections = live_detections
+
                 # Use the method already implemented in the original script to filter valid images
                 test_db.list_of_valid_images = []
                 for image_id in test_db.task_coco.getImgIds():
