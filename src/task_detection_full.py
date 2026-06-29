@@ -31,7 +31,7 @@ from coco_tasks.single_task_datasets import get_image_file_name
 try:
     import onnxruntime as ort
     import urllib.request, os as _os
-    _PICODET_ONNX_URL = "https://paddledet.bj.bcebos.com/deploy/third_engine/picodet_l_640_coco_npu.onnx"
+    _PICODET_ONNX_URL = "https://paddledet.bj.bcebos.com/deploy/third_engine/picodet_l_640_lcnet_postprocessed.onnx"
     _PICODET_ONNX_PATH = os.path.join(os.path.expanduser("~"), ".picodet", "picodet_l_640_coco.onnx")
 except ImportError:
     raise ImportError("Please install onnxruntime: pip install onnxruntime")
@@ -76,35 +76,46 @@ def _picodet_infer_one(sess, img_path, img_id, conf_thresh=DETECTION_THRESH):
     if img is None:
         return []
 
-    # PicoDet expects 640x640 RGB, normalised to [0,1]
     img_h, img_w = img.shape[:2]
     target = 640
-    scale  = target / max(img_h, img_w)
+
+    # letterbox resize (same as PaddleDetection LetterBoxResize)
+    scale = target / max(img_h, img_w)
     nw, nh = int(img_w * scale), int(img_h * scale)
-
-    resized = cv2.resize(img, (nw, nh))
-    padded  = np.full((target, target, 3), 114, dtype=np.uint8)
+    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+    padded = np.full((target, target, 3), 114, dtype=np.uint8)
     padded[:nh, :nw] = resized
-    padded  = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    inp     = np.transpose(padded, (2, 0, 1))[None]          # [1, 3, 640, 640]
+    padded = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB).astype(np.float32)
 
-    # scale_factor tells PicoDet how to map back to original coords
-    scale_factor = np.array([[scale, scale]], dtype=np.float32)
+    # ImageNet normalisation (PicoDet expects mean/std after /255)
+    padded /= 255.0
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    padded = (padded - mean) / std                         # [H,W,C]
+    inp = np.transpose(padded, (2, 0, 1))[None]            # [1,3,640,640]
 
-    outputs = sess.run(None, {
-        "image":        inp,
-        "scale_factor": scale_factor,
-    })
+    # Build input dict dynamically from what the model expects
+    input_names = [x.name for x in sess.get_inputs()]
+    feed = {}
+    for name in input_names:
+        name_lower = name.lower()
+        if "image" in name_lower:
+            feed[name] = inp
+        elif "scale" in name_lower:
+            feed[name] = np.array([[scale, scale]], dtype=np.float32)
+        elif "shape" in name_lower or "im_shape" in name_lower:
+            feed[name] = np.array([[img_h, img_w]], dtype=np.float32)
 
-    # PicoDet ONNX outputs: [N, 6] - each row: [class_id, score, x1, y1, x2, y2]
-    # (original image coordinates, already rescaled by scale_factor inside model)
-    raw = outputs[0]  # [N, 6]
+    outputs = sess.run(None, feed)
+
+    # Postprocessed model returns [N,6] or [N,7]; first row: [class_id, score, x1, y1, x2, y2, ...]
+    raw = outputs[0]
     if raw is None or len(raw) == 0:
         return []
 
     detections = []
     for det in raw:
-        cls_id, score, x1, y1, x2, y2 = det
+        cls_id, score, x1, y1, x2, y2 = det[:6]
         if float(score) < conf_thresh:
             continue
         cls_id = int(cls_id)
@@ -112,8 +123,8 @@ def _picodet_infer_one(sess, img_path, img_id, conf_thresh=DETECTION_THRESH):
         y1 = max(0.0, float(y1))
         x2 = min(float(img_w), float(x2))
         y2 = min(float(img_h), float(y2))
-        w  = x2 - x1
-        h  = y2 - y1
+        w = x2 - x1
+        h = y2 - y1
         if w <= 0 or h <= 0:
             continue
         coco_cat = DETECTOR_TO_COCO_MAPPING[cls_id] \
