@@ -58,7 +58,9 @@ def _load_picodet_session():
         urllib.request.urlretrieve(_PICODET_ONNX_URL, _PICODET_ONNX_PATH)
         print(f"Saved to {_PICODET_ONNX_PATH}")
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    sess = ort.InferenceSession(_PICODET_ONNX_PATH, providers=providers)
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3  # suppress ONNX Runtime warnings (0=verbose, 1=info, 2=warning, 3=error)
+    sess = ort.InferenceSession(_PICODET_ONNX_PATH, providers=providers, sess_options=opts)
     return sess
 
 
