@@ -11,3 +11,4 @@ cython
 ultralytics
 pycocotools
 onnxruntime
+opencv-python
