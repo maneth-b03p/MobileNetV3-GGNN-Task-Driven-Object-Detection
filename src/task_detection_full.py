@@ -46,8 +46,8 @@ DETECTOR_TO_COCO_MAPPING = [
     67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90
 ]
 
-DETECTION_THRESH = 0.02
-MAX_DETECTIONS   = 128
+DETECTION_THRESH = 0.3
+MAX_DETECTIONS   = 32
 
 
 def _load_picodet_session():
@@ -241,7 +241,7 @@ def main(random_seed, test_on_gt, only_test, overfit, fusion, weighted_aggregati
         )
 
     if not test_on_gt and detector == "yolo":
-        print(f"Initializing PicoDet-L ONNX session for CPU inference...")
+        print(f"Initializing PicoDet-L ONNX session (CUDA if available)...")
         picodet_sess = _load_picodet_session()
 
     for task_number in TASK_NUMBERS:
