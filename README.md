@@ -132,7 +132,6 @@ The app provides:
 - Inference time benchmarking on edge devices
 - PicoDet-L integration in web app (`app.py`)
 - Unified hardware accelerator design for depthwise convolution operations across PicoDet-L and MobileNetV3-Large
-- Deployment on embedded platforms (Raspberry Pi, Jetson Nano, etc.)
 - Mathematical formulation of the implemented model
 
 ## Acknowledgment
